@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+*.so
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# ChromaDB (RAG vector store - recreated on demand)
+chroma_db/
+chroma_data/
+
+# Logs
+*.log
+
+# uv
+uv.lock
+
+# Coverage
+htmlcov/
+.coverage
+coverage/
