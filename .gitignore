@@ -36,6 +36,8 @@ Thumbs.db
 # ChromaDB (RAG vector store - recreated on demand)
 chroma_db/
 chroma_data/
+data/chromadb/
+**/chromadb/
 
 # Logs
 *.log
