@@ -8,7 +8,9 @@ build/
 .venv/
 venv/
 env/
+.workspace/
 *.so
+
 
 # Node
 node_modules/
@@ -44,6 +46,7 @@ data/chromadb/
 
 # uv
 uv.lock
+*.lock
 
 # Coverage
 htmlcov/

@@ -89,12 +89,13 @@ export default function WelcomeModal({ show, onClose, onDontShowAgain, initialTa
                 Code RAG uses AST-based chunking for these languages (function/class boundaries preserved):
               </p>
               <div className="grid grid-cols-3 gap-1 text-xs">
-                {['Python', 'Java', 'C++', 'C', 'Kotlin', 'TypeScript', 'TSX', 'JavaScript'].map((l) => (
+                {['Python', 'Java', 'C++', 'C', 'Kotlin', 'TypeScript', 'TSX', 'JavaScript',
+                  'HTML', 'CSS', 'JSON', 'Markdown'].map((l) => (
                   <span key={l} className="bg-blue-900/40 text-blue-300 px-2 py-0.5 rounded text-center">{l}</span>
                 ))}
               </div>
               <p className="text-xs text-gray-500 mt-2">
-                Rust, Go, Ruby, Swift &amp; PHP support coming soon, they currently indexed as single chunks.
+                Rust, Go, Ruby, Swift &amp; PHP indexed as single chunks (tree-sitter grammars coming soon).
               </p>
             </>
           )}

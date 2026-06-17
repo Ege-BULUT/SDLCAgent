@@ -3,6 +3,7 @@ import logging
 from tree_sitter import Language, Parser
 import tree_sitter_python, tree_sitter_java, tree_sitter_cpp, tree_sitter_kotlin
 import tree_sitter_typescript, tree_sitter_javascript
+import tree_sitter_html, tree_sitter_css, tree_sitter_json, tree_sitter_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,10 @@ _TS_LANGUAGES = {
     "typescript": Language(tree_sitter_typescript.language_typescript()),
     "tsx":        Language(tree_sitter_typescript.language_tsx()),
     "javascript": Language(tree_sitter_javascript.language()),
+    "html":       Language(tree_sitter_html.language()),
+    "css":        Language(tree_sitter_css.language()),
+    "json":       Language(tree_sitter_json.language()),
+    "markdown":   Language(tree_sitter_markdown.language()),
 }
 
 # Node types that form chunk boundaries per language
@@ -39,7 +44,13 @@ _CHUNK_NODES = {
                     "lexical_declaration"},
     "javascript": {"function_declaration", "class_declaration", "import_statement",
                     "lexical_declaration", "expression_statement"},
+    "html":  {"doctype", "element"},
+    "css":   {"rule_set", "media_statement"},
+    "json":  {"pair"},
+    "markdown": {"atx_heading", "setext_heading", "code_block", "fenced_code_block"},
 }
+
+_DEEP_CHUNK = {"json"}
 
 # Languages supported by Tree-sitter (AST-chunked)
 _TS_SUPPORTED = set(_TS_LANGUAGES.keys())
@@ -63,6 +74,14 @@ def _get_lang_key(language: str) -> str | None:
         return "cpp"
     if lang in ("c", "h"):
         return "c"
+    if lang in ("html", "htm", "xhtml"):
+        return "html"
+    if lang in ("css", "scss", "less"):
+        return "css"
+    if lang in ("json",):
+        return "json"
+    if lang in ("md", "markdown", "mdown"):
+        return "markdown"
     return None
 
 
@@ -71,12 +90,80 @@ def _is_pure_punctuation(text: str) -> bool:
     return bool(stripped) and not any(ch.isalnum() for ch in stripped)
 
 
+def _find_chunk_container(node, chunk_nodes):
+    """Walk into wrapper nodes (e.g. <html>, JSON object/array) to find
+    the level where direct children are the actual chunk nodes."""
+    for child in node.children:
+        if any(c.type in chunk_nodes for c in child.children):
+            return child
+    return node
+
+
+def _recursive_chunks(root, source, chunk_nodes):
+    """Walk the tree recursively collecting text between chunk node boundaries."""
+    chunks: list[str] = []
+    prev_end = 0
+
+    def walk(node):
+        nonlocal prev_end
+        if node.type in chunk_nodes:
+            if node.start_byte > prev_end:
+                between = source[prev_end:node.start_byte].strip()
+                if between:
+                    chunks.append(between)
+            text = source[node.start_byte:node.end_byte].strip()
+            if text:
+                chunks.append(text)
+            prev_end = node.end_byte
+        else:
+            for c in node.children:
+                walk(c)
+
+    walk(root)
+    if prev_end < len(source):
+        remaining = source[prev_end:].strip()
+        if remaining:
+            chunks.append(remaining)
+    return chunks
+
+
+def _html_tree_chunks(root, source, chunk_nodes):
+    body_el = None
+    stack = [root]
+    while stack and body_el is None:
+        n = stack.pop()
+        if n.type == "start_tag":
+            for c in n.children:
+                if c.type == "tag_name":
+                    tag = source[c.start_byte:c.end_byte].decode() if isinstance(source, bytes) else source[c.start_byte:c.end_byte]
+                    if tag == "body" and n.parent and n.parent.type == "element":
+                        body_el = n.parent
+                        break
+        stack.extend(n.children)
+
+    if body_el is None:
+        return _recursive_chunks(root, source, chunk_nodes)
+
+    chunks: list[str] = []
+    prev_end = 0
+    for child in body_el.children:
+        if child.type in chunk_nodes:
+            if child.start_byte > prev_end:
+                between = source[prev_end:child.start_byte].strip()
+                if between:
+                    chunks.append(between)
+            text = source[child.start_byte:child.end_byte].strip()
+            if text:
+                chunks.append(text)
+            prev_end = child.end_byte
+    if prev_end < len(source):
+        remaining = source[prev_end:].strip()
+        if remaining:
+            chunks.append(remaining)
+    return chunks
+
+
 def treesitter_chunk(source: str, language: str) -> list[str]:
-    """
-    Tree-sitter AST-based code chunker.
-    Chunks are determined by AST node boundaries :NOT by character count.
-    Each function, class, method, import, etc. becomes its own chunk.
-    """
     lang_key = _get_lang_key(language)
     if lang_key is None:
         logger.warning("No tree-sitter grammar for '%s' :indexing entire file as one chunk", language)
@@ -96,36 +183,37 @@ def treesitter_chunk(source: str, language: str) -> list[str]:
 
     root = tree.root_node
 
-    # Collect (text, is_declaration) pairs
+    if lang_key == "markdown":
+        return _recursive_chunks(root, source, chunk_nodes)
+    if lang_key == "html":
+        return _html_tree_chunks(root, source, chunk_nodes)
+    if lang_key in _DEEP_CHUNK:
+        container = _find_chunk_container(root, chunk_nodes)
+    else:
+        container = root
+
     pairs: list[tuple[str, bool]] = []
     prev_end_byte = 0
 
-    for child in root.children:
+    for child in container.children:
         if child.type in chunk_nodes:
-            # Glue text between previous boundary and this node
             if child.start_byte > prev_end_byte:
                 between = source[prev_end_byte:child.start_byte]
                 stripped = between.strip()
                 if stripped and not _is_pure_punctuation(stripped):
                     pairs.append((stripped, False))
 
-            # Declaration node itself
             node_text = source[child.start_byte:child.end_byte].strip()
             if node_text:
                 pairs.append((node_text, True))
 
             prev_end_byte = child.end_byte
 
-    # Trailing code after the last node
     if prev_end_byte < len(source):
         remaining = source[prev_end_byte:].strip()
         if remaining and not _is_pure_punctuation(remaining):
             pairs.append((remaining, False))
 
-    # Build final chunks:
-    #   - Declaration chunks always start a new chunk (never merge two declarations).
-    #   - Small glue chunks (< 40 chars) are absorbed into the preceding chunk.
-    #   - Larger glue chunks stand as their own chunk.
     merged: list[str] = []
     for text, is_decl in pairs:
         if is_decl:

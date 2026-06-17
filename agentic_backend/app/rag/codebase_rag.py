@@ -7,6 +7,7 @@ from chromadb.config import Settings as ChromaSettings
 from langchain_ollama import OllamaEmbeddings
 
 from app.rag.code_chunker import chunk_code
+from app.rag.agentignore import read_agentignore, is_ignored
 
 from app.core.config import settings
 
@@ -32,7 +33,18 @@ LANGUAGE_EXT_MAP = {
     ".rb": "ruby",
     ".swift": "swift",
     ".php": "php",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "css",
+    ".json": "json",
+    ".md": "markdown",
+    ".mdx": "markdown",
 }
+
+LANG_TO_EXT: dict[str, list[str]] = {}
+for ext, lang in LANGUAGE_EXT_MAP.items():
+    LANG_TO_EXT.setdefault(lang, []).append(ext)
 
 
 class CodebaseRAG:
@@ -114,29 +126,51 @@ class CodebaseRAG:
         if not base.is_dir():
             raise NotADirectoryError(f"Directory not found: {repo_path}")
 
+        # Map language names (e.g. 'python') to real file extensions (e.g. '.py')
         if extensions:
-            exts = [e if e.startswith(".") else f".{e}" for e in extensions]
+            exts = set()
+            for lang in extensions:
+                if lang.startswith("."):
+                    exts.add(lang.lower())
+                elif mapped := LANG_TO_EXT.get(lang):
+                    exts.update(mapped)
+                else:
+                    exts.add(f".{lang}")
+            exts = sorted(exts)
         else:
             exts = list(LANGUAGE_EXT_MAP.keys())
 
+        log_messages = []
         files_processed = 0
         total_chunks = 0
         processed_files = []
 
+        log_messages.append(f"Scanning {base} for {exts} files ...")
+        patterns = read_agentignore(repo_path)
         for fpath in base.rglob("*"):
-            if fpath.is_file() and fpath.suffix.lower() in exts:
+            if not fpath.is_file():
+                continue
+            rel = str(fpath.relative_to(base))
+            if is_ignored(rel, patterns):
+                continue
+            if fpath.suffix.lower() in exts:
                 chunks = self.ingest_file(str(fpath))
                 if chunks > 0:
                     files_processed += 1
                     total_chunks += chunks
                     processed_files.append(str(fpath))
+                    log_messages.append(f"  {fpath.name} → {chunks} chunks")
+
+        log_messages.append(f"Done: {files_processed} files, {total_chunks} chunks")
+        for msg in log_messages:
+            logger.info(msg)
 
         result = {
             "files_processed": files_processed,
             "chunks_created": total_chunks,
             "processed_files": processed_files,
+            "logs": log_messages,
         }
-        logger.info("Ingested directory %s: %d files, %d chunks", repo_path, files_processed, total_chunks)
         return result
 
     def retrieve_context(self, query: str, k: int = 3) -> str:

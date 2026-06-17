@@ -1,0 +1,112 @@
+/* General Styles */
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --text-primary: #e6e6e6;
+  --accent-color: #0f3460;
+  --highlight: #e94560;
+  --transition-speed: 0.3s;
+  --border-radius: 8px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-y: auto; /* Changed from hidden to auto for better accessibility */
+}
+
+/* Menu Wrapper */
+.menu-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+  background-color: var(--bg-secondary);
+  overflow-y: auto; /* Allows scrolling if content overflows */
+}
+
+/* Shared Menu Panel Styles */
+.menu-panel {
+  background-color: var(--accent-color);
+  padding: 2rem;
+  border-radius: var(--border-radius);
+  text-align: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  width: 100%;
+  max-width: 500px;
+  transition: transform var(--transition-speed);
+}
+
+.menu-panel:hover {
+  transform: translateY(-2px);
+}
+
+.menu-panel h1 {
+  margin-bottom: 1.5rem;
+  color: var(--text-primary);
+  font-size: 2rem;
+}
+
+.menu-panel button {
+  background-color: var(--highlight);
+  color: var(--text-primary);
+  border: none;
+  padding: 0.75rem 1.5rem;
+  margin: 0.5rem;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background-color var(--transition-speed);
+  will-change: transform;
+}
+
+.menu-panel button:hover {
+  background-color: #c13a50;
+}
+
+/* Focus styles for accessibility */
+.menu-panel button:focus {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+/* Main Menu Specific */
+.main-menu {
+  /* Uses .menu-panel styles */
+}
+
+/* Inventory Menu Specific */
+.inventory-menu {
+  /* Uses .menu-panel styles */
+}
+
+.inventory-items {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-top: 1rem;
+  padding: 1rem;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius);
+}
+
+.inventory-item {
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: background-color var(--transition-speed);
+}
+
+.inventory-item:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}

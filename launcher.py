@@ -19,18 +19,28 @@ def find_free_port(start: int = 8000, max_tries: int = 100) -> int | None:
     return None
 
 
+def get_backend_python() -> str:
+    """Use the project's virtual environment Python if available."""
+    venv_python = BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
 def main():
     port = find_free_port()
     if port is None:
         print("ERROR: No free port found.")
         sys.exit(1)
 
+    backend_python = get_backend_python()
     print(f"[launcher] Found free port: {port}")
+    print(f"[launcher] Using backend Python: {backend_python}")
     print(f"[launcher] Starting backend (uvicorn app.main:app --host 0.0.0.0 --port {port})...")
 
     backend_proc = subprocess.Popen(
         [
-            sys.executable,
+            backend_python,
             "-m", "uvicorn",
             "app.main:app",
             "--host", "0.0.0.0",

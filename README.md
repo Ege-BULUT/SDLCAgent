@@ -33,7 +33,7 @@ code_snippets/
 | **Backend** | Python 3.12, FastAPI, Uvicorn, Pydantic |
 | **AI/Agent** | LangGraph 1.2+, LangChain 1.3+, Ollama |
 | **Vector DB** | ChromaDB (codebase RAG) |
-| **Code Chunking** | Tree-sitter (Python/Java/C++/C/Kotlin/TS/TSX/JS) |
+| **Code Chunking** | Tree-sitter (Python/Java/C++/C/Kotlin/TS/TSX/JS, HTML/CSS/JSON/Markdown) |
 | **Frontend** | React 18, TypeScript 5, Vite 5 |
 | **Styling** | Tailwind CSS 3, @tailwindcss/typography |
 | **LLM Models** | Qwen2.5-Coder, Qwen3.5, Granite, Gemma (local & cloud) |
@@ -43,7 +43,7 @@ code_snippets/
 
 - **Multi-agent loop:** Coder + Reviewer agents iterate up to N rounds. Reviewer can `PASS` or list issues for the Coder to fix.
 - **Codebase RAG:** Scan a directory → Tree-sitter AST chunking (function/class/import boundaries) → ChromaDB embedding → semantic retrieval.
-- **8 languages for AST chunking:** Python, Java, C++, C, Kotlin, TypeScript, TSX, JavaScript.
+- **12 languages for AST chunking:** Python, Java, C++, C, Kotlin, TypeScript, TSX, JavaScript, HTML, CSS, JSON, Markdown.
 - **PonyTail mode:** YAGNI-first prompt injection for minimal code output. See [ponytail](https://github.com/anomalyco/ponytail).
 - **Launch system:** One-click run for AI-generated Streamlit dashboards or CLI apps.
 - **Markdown review:** AI review rendered with syntax highlighting via react-markdown + react-syntax-highlighter.

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from datetime import datetime
@@ -5,22 +6,42 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.models.schemas import (
     CodeGenerationRequest,
     IngestRequest,
     IngestResponse,
+    StructureRequest,
+    StructureResponse,
+    RepoItem,
+    BlacklistRequest,
+    BlacklistResponse,
     LaunchRequest,
     LaunchResponse,
     AgentResponse,
     ModelInfo,
     HealthResponse,
     ErrorResponse,
+    WorkspaceInitResponse,
+    WorkspaceSetFilesRequest,
+    WorkspaceFileTreeResponse,
+    WorkspaceFileContentResponse,
+    WorkspaceApplyRequest,
+    WorkspaceApplyResponse,
+    WorkspaceRevertResponse,
+    WorkspaceCleanupResponse,
 )
-from app.rag.codebase_rag import CodebaseRAG
+from app.rag.codebase_rag import CodebaseRAG, LANGUAGE_EXT_MAP
+from app.rag.agentignore import read_agentignore, write_agentignore, is_ignored
 from app.agent.workflow import build_workflow
 from app.agent.state import AgentState
+from app.agent.streaming import stream_agent
+from app.workspace.manager import (
+    create_session, set_files, get_file_tree, get_file_content,
+    apply_files, revert_files, cleanup_stale_sessions, heartbeat,
+)
 import subprocess
 import os
 
@@ -102,6 +123,7 @@ def ingest_codebase(req: IngestRequest):
             files_processed=result["files_processed"],
             chunks_created=result["chunks_created"],
             collection_name=settings.COLLECTION_NAME,
+            logs=result.get("logs", []),
         )
     except NotADirectoryError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -126,6 +148,7 @@ def generate_code(req: CodeGenerationRequest):
         "language": req.language,
         "context": "",
         "draft_code": "",
+        "files": {},
         "review_feedback": "None yet. Write the initial code.",
         "iterations": 0,
         "is_valid": False,
@@ -148,6 +171,11 @@ def generate_code(req: CodeGenerationRequest):
     logs = final_state.get("logs", [])
     logs.append(f"Job completed at {datetime.now().isoformat()}")
 
+    generated_files = final_state.get("files", {})
+
+    if req.session_id and generated_files:
+        set_files(req.session_id, generated_files)
+
     return AgentResponse(
         task=final_state.get("task", req.task),
         language=final_state.get("language", req.language),
@@ -159,6 +187,47 @@ def generate_code(req: CodeGenerationRequest):
         coder_model=coder_model,
         reviewer_model=reviewer_model,
         ponytail_mode=final_state.get("ponytail_mode", req.ponytail_mode),
+        files=generated_files,
+    )
+
+
+@app.post("/api/v1/agent/generate/stream")
+async def generate_code_stream(req: CodeGenerationRequest):
+    """SSE streaming endpoint for live agent output."""
+    coder_model = req.coder_model or settings.CODER_MODEL
+    reviewer_model = req.reviewer_model or settings.REVIEWER_MODEL
+    max_iter = min(req.max_iterations or settings.MAX_ITERATIONS, 10)
+    language = req.language or ""
+
+    if coder_model not in settings.AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unknown coder model: {coder_model}")
+    if reviewer_model not in settings.AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unknown reviewer model: {reviewer_model}")
+    judge_model = req.judge_model or reviewer_model
+    if judge_model not in settings.AVAILABLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unknown judge model: {judge_model}")
+
+    async def event_stream():
+        async for event in stream_agent(
+            task=req.task,
+            language=language,
+            coder_model=coder_model,
+            reviewer_model=reviewer_model,
+            max_iterations=max_iter,
+            ponytail_mode=req.ponytail_mode,
+            judge_model=judge_model,
+        ):
+            yield event
+            await asyncio.sleep(0)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 
@@ -171,6 +240,113 @@ def rag_stats():
 def rag_clear():
     rag_engine.delete_collection()
     return {"status": "cleared", "collection": settings.COLLECTION_NAME}
+
+
+@app.post("/api/v1/rag/detect-languages")
+def detect_languages(repo_path: str):
+    """Scan a directory and return which supported languages are present."""
+    from pathlib import Path
+    detected: set[str] = set()
+    root = Path(repo_path)
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {repo_path}")
+
+    patterns = read_agentignore(repo_path)
+
+    for f in root.rglob("*"):
+        if f.is_file():
+            rel = str(f.relative_to(root))
+            if is_ignored(rel, patterns):
+                continue
+            lang = LANGUAGE_EXT_MAP.get(f.suffix.lower())
+            if lang:
+                detected.add(lang)
+    return {"languages": sorted(detected)}
+
+
+@app.post("/api/v1/rag/detect-structure", response_model=StructureResponse)
+def detect_structure(req: StructureRequest):
+    """Scan a directory and return folders/files for blacklist selection."""
+    root = Path(req.repo_path)
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {req.repo_path}")
+
+    patterns = read_agentignore(req.repo_path)
+    items: list[RepoItem] = []
+
+    for entry in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        rel = f"{entry.name}/" if entry.is_dir() else entry.name
+        items.append(RepoItem(
+            path=entry.name,
+            is_dir=entry.is_dir(),
+            blacklisted=is_ignored(rel, patterns),
+        ))
+
+    return StructureResponse(repo_path=req.repo_path, items=items, patterns=patterns)
+
+
+@app.post("/api/v1/rag/blacklist", response_model=BlacklistResponse)
+def update_blacklist(req: BlacklistRequest):
+    """Save selected ignore patterns to .agentignore."""
+    root = Path(req.repo_path)
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {req.repo_path}")
+
+    saved = write_agentignore(req.repo_path, req.patterns)
+    if not saved:
+        raise HTTPException(status_code=500, detail="Failed to save .agentignore")
+    return BlacklistResponse(repo_path=req.repo_path, patterns=req.patterns, saved=True)
+
+
+@app.post("/api/v1/workspace/init", response_model=WorkspaceInitResponse)
+def workspace_init():
+    return WorkspaceInitResponse(session_id=create_session())
+
+
+@app.post("/api/v1/workspace/heartbeat")
+def workspace_heartbeat(session_id: str):
+    ok = heartbeat(session_id)
+    return {"ok": ok}
+
+
+@app.post("/api/v1/workspace/set-files")
+def workspace_set_files(req: WorkspaceSetFilesRequest):
+    ok = set_files(req.session_id, req.files)
+    return {"ok": ok, "base_dir": req.base_dir}
+
+
+@app.get("/api/v1/workspace/files", response_model=WorkspaceFileTreeResponse)
+def workspace_files(session_id: str):
+    tree = get_file_tree(session_id)
+    if tree is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return WorkspaceFileTreeResponse(**tree)
+
+
+@app.get("/api/v1/workspace/file", response_model=WorkspaceFileContentResponse)
+def workspace_file(session_id: str, path: str):
+    content = get_file_content(session_id, path)
+    if content is None:
+        raise HTTPException(status_code=404, detail="File not found in workspace")
+    return WorkspaceFileContentResponse(path=path, content=content)
+
+
+@app.post("/api/v1/workspace/apply", response_model=WorkspaceApplyResponse)
+def workspace_apply(req: WorkspaceApplyRequest):
+    result = apply_files(req.session_id, req.base_dir)
+    return WorkspaceApplyResponse(**result)
+
+
+@app.post("/api/v1/workspace/revert", response_model=WorkspaceRevertResponse)
+def workspace_revert(req: WorkspaceApplyRequest):
+    result = revert_files(req.session_id, req.base_dir)
+    return WorkspaceRevertResponse(**result)
+
+
+@app.post("/api/v1/workspace/cleanup", response_model=WorkspaceCleanupResponse)
+def workspace_cleanup():
+    result = cleanup_stale_sessions()
+    return WorkspaceCleanupResponse(**result)
 
 
 @app.post("/api/v1/launch", response_model=LaunchResponse)

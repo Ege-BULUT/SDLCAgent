@@ -9,6 +9,21 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+def parse_files_from_code(text: str) -> dict[str, str]:
+    """Extract multi-file output from LLM response.
+    Format: [FILE: path.ext] content [/FILE]
+    Falls back to treating the whole text as a single file if no [FILE:] tags found."""
+    files: dict[str, str] = {}
+    import re
+    pattern = re.compile(r'\[FILE:\s*(.+?)\](.*?)\[/FILE\]', re.DOTALL)
+    matches = pattern.findall(text)
+    for filepath, content in matches:
+        files[filepath.strip()] = content.strip()
+    if not files and text.strip():
+        files["generated_code.txt"] = text.strip()
+    return files
+
 PONYTAIL_RULES = (
     "── PONYTAIL MODE ──────────────────────────────────\n"
     "Before writing code, follow these rules IN ORDER:\n"
@@ -24,16 +39,22 @@ PONYTAIL_RULES = (
 
 BASE_CODER_SYSTEM = (
     "You are an expert {language} developer. "
-    "Write clean, production-ready {language} code based on the task. "
+    "Write clean, production-ready code based on the task. "
+    "You may output MULTIPLE files if the task requires it. "
     "Use the provided codebase context for reference. "
-    "Return ONLY valid {language} code without markdown wrappers or explanations."
+    "Use this format for EACH file:\n\n"
+    "[FILE: path/to/file.ext]\n"
+    "code content here...\n"
+    "[/FILE]\n\n"
+    "If only one file is needed, still use the [FILE:] format. "
+    "Put files in appropriate directories (src/, lib/, etc.) based on the project structure."
 )
 
 CODER_USER_PROMPT = (
     "Task: {task}\n\n"
     "Relevant codebase context:\n{context}\n\n"
     "Previous review feedback to address:\n{review_feedback}\n\n"
-    "Write the complete {language} code solution:"
+    "Write the complete code solution. Output each file inside [FILE: path][/FILE] tags:"
 )
 
 BASE_REVIEWER_SYSTEM = (
@@ -120,8 +141,14 @@ def coder_node(state: AgentState) -> dict:
         logger.error(error_msg)
         draft_code = f"# Error generating code: {str(e)}\n# Please check model availability"
 
+    files = parse_files_from_code(draft_code)
+    log_msg = f"  → {len(files)} file(s) generated: {', '.join(files.keys())}"
+    logs.append(log_msg)
+    logger.info(log_msg)
+
     return {
         "draft_code": draft_code,
+        "files": files,
         "iterations": state.get("iterations", 0) + 1,
         "logs": logs,
     }

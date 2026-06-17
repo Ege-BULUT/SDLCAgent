@@ -55,7 +55,7 @@ export default function LogViewer({ logs }: Props) {
 
       <div className="flex items-center justify-between px-4 py-1.5 bg-dark-800 border-b border-dark-600 flex-shrink-0">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-          Execution Logs {logs.length > 0 && <span className="text-gray-500">({logs.length} lines)</span>}
+          Logs {logs.length > 0 && <span className="text-gray-500">({logs.length} lines)</span>}
         </span>
         <button
           onClick={() => setCollapsed((c) => !c)}
@@ -68,7 +68,7 @@ export default function LogViewer({ logs }: Props) {
       {!collapsed && (
         <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-black/40">
           {logs.length === 0 ? (
-            <div className="text-gray-600 italic">No logs yet. Run a generation task to see output here.</div>
+            <div className="text-gray-600 italic">No logs yet. Ingest a codebase or run a generation task to see output here.</div>
           ) : (
             logs.map((line, i) => <LogLine key={i} line={line} index={i} />)
           )}

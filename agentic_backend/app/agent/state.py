@@ -6,6 +6,7 @@ class AgentState(TypedDict):
     language: str
     context: str
     draft_code: str
+    files: dict[str, str]
     review_feedback: str
     iterations: int
     is_valid: bool

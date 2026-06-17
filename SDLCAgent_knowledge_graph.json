@@ -1,0 +1,369 @@
+{
+  "project": {
+    "name": "SDLCAgent",
+    "full_name": "Software Development Lifecycle Agent",
+    "description": "Multi-agent AI coding assistant that understands multi-language codebases, generates code via LLM agents, reviews it with a second LLM, and iteratively improves it — all through a web UI.",
+    "version": "1.0.0",
+    "license": "MIT",
+    "root": "code_snippets/"
+  },
+  "architecture": {
+    "layers": [
+      {
+        "name": "Frontend",
+        "dir": "agentic_frontend/",
+        "tech": ["React 18", "TypeScript 5", "Vite 5", "Tailwind CSS 3"],
+        "entry": "src/main.tsx",
+        "description": "Single-page web UI for task input, model selection, RAG management, live streaming code preview, review feedback, and workspace file management."
+      },
+      {
+        "name": "Backend API",
+        "dir": "agentic_backend/",
+        "tech": ["Python 3.12", "FastAPI", "Uvicorn", "Pydantic v2"],
+        "entry": "app/main.py",
+        "description": "REST + SSE API server. Handles code generation (sync + streaming), RAG ingestion, workspace management, and project launching."
+      },
+      {
+        "name": "Agent Orchestration",
+        "dir": "agentic_backend/app/agent/",
+        "tech": ["LangGraph 1.2+", "LangChain 1.3+", "Ollama"],
+        "description": "Multi-agent workflow: retrieve context → coder writes code → reviewer checks → loop until PASS or max iterations. Two modes: sync (LangGraph StateGraph) and streaming (async SSE token-by-token)."
+      },
+      {
+        "name": "RAG / Vector Store",
+        "dir": "agentic_backend/app/rag/",
+        "tech": ["ChromaDB", "Tree-sitter", "Ollama Embeddings"],
+        "description": "Codebase ingestion pipeline: scan directory → AST chunking via Tree-sitter → embed via Ollama → store in ChromaDB → semantic retrieval for agent context."
+      },
+      {
+        "name": "Workspace Manager",
+        "dir": "agentic_backend/app/workspace/",
+        "tech": ["JSON file-based", "filesystem"],
+        "description": "Session-based virtual workspace: store generated files, apply to disk with backup, revert from backup, cleanup stale sessions."
+      }
+    ],
+    "data_flow": [
+      "User enters task in TaskPanel → App.handleGenerate() → api.generateCodeStream() → POST /api/v1/agent/generate/stream",
+      "Backend: stream_agent() → RAG context retrieval → coder LLM (Ollama) → reviewer LLM → judge LLM → SSE events",
+      "SSE events flow: node_start → coder_token/thought_token → node_end(coder) → node_start(reviewer) → reviewer_token → node_end(reviewer) → [loop] → node_start(judge) → judge_token → node_end(judge) → done",
+      "Frontend: handleStreamEvent() dispatches to coderBuffer/thoughtsBuffer/finalFeedback/judgeBuffer → FilePreview, ReviewFeedback render live",
+      "On done: workspaceFiles populated → FileExplorer shows tree → WorkspaceActions can Apply/Revert to disk"
+    ]
+  },
+  "files": {
+    "backend": {
+      "app/main.py": {
+        "purpose": "FastAPI application entry point. Defines all REST endpoints, CORS, logging, SSE streaming endpoint.",
+        "exports": ["app (FastAPI instance)"],
+        "endpoints": [
+          {"method": "GET", "path": "/health", "handler": "health()", "returns": "HealthResponse"},
+          {"method": "GET", "path": "/api/v1/models", "handler": "list_models()", "returns": "model list"},
+          {"method": "POST", "path": "/api/v1/rag/ingest", "handler": "ingest_codebase()", "returns": "IngestResponse"},
+          {"method": "POST", "path": "/api/v1/agent/generate", "handler": "generate_code()", "returns": "AgentResponse (sync)"},
+          {"method": "POST", "path": "/api/v1/agent/generate/stream", "handler": "generate_code_stream()", "returns": "StreamingResponse (SSE)"},
+          {"method": "GET", "path": "/api/v1/rag/stats", "handler": "rag_stats()", "returns": "collection stats"},
+          {"method": "POST", "path": "/api/v1/rag/clear", "handler": "rag_clear()", "returns": "status"},
+          {"method": "POST", "path": "/api/v1/rag/detect-languages", "handler": "detect_languages()", "returns": "language list"},
+          {"method": "POST", "path": "/api/v1/rag/detect-structure", "handler": "detect_structure()", "returns": "StructureResponse"},
+          {"method": "POST", "path": "/api/v1/rag/blacklist", "handler": "update_blacklist()", "returns": "BlacklistResponse"},
+          {"method": "POST", "path": "/api/v1/workspace/init", "handler": "workspace_init()", "returns": "WorkspaceInitResponse"},
+          {"method": "POST", "path": "/api/v1/workspace/heartbeat", "handler": "workspace_heartbeat()", "returns": "{ok}"},
+          {"method": "POST", "path": "/api/v1/workspace/set-files", "handler": "workspace_set_files()", "returns": "{ok}"},
+          {"method": "GET", "path": "/api/v1/workspace/files", "handler": "workspace_files()", "returns": "WorkspaceFileTreeResponse"},
+          {"method": "GET", "path": "/api/v1/workspace/file", "handler": "workspace_file()", "returns": "WorkspaceFileContentResponse"},
+          {"method": "POST", "path": "/api/v1/workspace/apply", "handler": "workspace_apply()", "returns": "WorkspaceApplyResponse"},
+          {"method": "POST", "path": "/api/v1/workspace/revert", "handler": "workspace_revert()", "returns": "WorkspaceRevertResponse"},
+          {"method": "POST", "path": "/api/v1/workspace/cleanup", "handler": "workspace_cleanup()", "returns": "WorkspaceCleanupResponse"},
+          {"method": "POST", "path": "/api/v1/launch", "handler": "launch_project()", "returns": "LaunchResponse"}
+        ],
+        "imports": ["app.core.config.settings", "app.models.schemas", "app.rag.codebase_rag", "app.rag.agentignore", "app.agent.workflow", "app.agent.state", "app.agent.streaming", "app.workspace.manager"]
+      },
+      "app/core/config.py": {
+        "purpose": "Pydantic Settings class. All configuration: Ollama URL, model names, ChromaDB path, max iterations, logging. Exposes AVAILABLE_MODELS dict with 8 models (local + cloud).",
+        "exports": ["settings (Settings singleton)"],
+        "key_config": {
+          "OLLAMA_BASE_URL": "http://localhost:11434",
+          "CODER_MODEL": "qwen2.5-coder:3b",
+          "REVIEWER_MODEL": "qwen3.5:4b",
+          "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
+          "CHROMA_PERSIST_DIR": "./data/chromadb",
+          "COLLECTION_NAME": "codebase",
+          "MAX_ITERATIONS": 3,
+          "env_prefix": "AGENTIC_"
+        },
+        "available_models": {
+          "qwen2.5-coder:3b": {"type": "local", "size": "3B", "role": "coder"},
+          "qwen2.5-coder:1.5b": {"type": "local", "size": "1.5B", "role": "coder"},
+          "qwen3.5:4b": {"type": "local", "size": "4B", "role": "reviewer"},
+          "granite4.1:3b": {"type": "local", "size": "3B", "role": "general"},
+          "qwen3:4b": {"type": "local", "size": "4B", "role": "general"},
+          "qwen3.5:2b": {"type": "local", "size": "2B", "role": "general"},
+          "qwen3-coder:480b-cloud": {"type": "cloud", "size": "480B", "role": "coder"},
+          "gemma4:31b-cloud": {"type": "cloud", "size": "31B", "role": "reviewer"}
+        }
+      },
+      "app/models/schemas.py": {
+        "purpose": "Pydantic v2 request/response models for all API endpoints. 20+ schema classes.",
+        "exports": ["CodeGenerationRequest", "IngestRequest", "IngestResponse", "StructureRequest", "StructureResponse", "RepoItem", "BlacklistRequest", "BlacklistResponse", "AgentResponse", "ModelInfo", "HealthResponse", "LaunchRequest", "LaunchResponse", "WorkspaceInitResponse", "WorkspaceSetFilesRequest", "WorkspaceFileTreeResponse", "WorkspaceFileContentResponse", "WorkspaceApplyRequest", "WorkspaceApplyResponse", "WorkspaceRevertResponse", "WorkspaceCleanupResponse", "ErrorResponse"],
+        "key_schema": {
+          "CodeGenerationRequest": {"fields": ["task (str, required)", "language (str, default='python')", "coder_model (str|None)", "reviewer_model (str|None)", "judge_model (str|None)", "max_iterations (int, 1-10)", "ponytail_mode (bool)", "session_id (str|None)"]},
+          "AgentResponse": {"fields": ["task", "language", "draft_code", "review_feedback", "iterations", "is_valid", "logs", "coder_model", "reviewer_model", "ponytail_mode", "files (dict[str,str])"]}
+        }
+      },
+      "app/agent/state.py": {
+        "purpose": "LangGraph AgentState TypedDict. Shared state across workflow nodes.",
+        "exports": ["AgentState"],
+        "fields": ["task", "language", "context", "draft_code", "files (dict[str,str])", "review_feedback", "iterations", "is_valid", "errors (List[str])", "logs (List[str])", "coder_model", "reviewer_model", "ponytail_mode"]
+      },
+      "app/agent/workflow.py": {
+        "purpose": "SYNC LangGraph workflow. Builds StateGraph with 3 nodes (retrieve → coder → reviewer) + conditional loop. Used by POST /api/v1/agent/generate (non-streaming).",
+        "exports": ["build_workflow()"],
+        "nodes": {
+          "retrieve_node": "Calls CodebaseRAG.retrieve_context() → stores in state.context",
+          "coder_node": "ChatOllama + ChatPromptTemplate → generates code with [FILE: path][/FILE] format → parse_files_from_code()",
+          "reviewer_node": "ChatOllama → reviews code → returns PASS or issue list → sets state.is_valid",
+          "should_continue": "Conditional edge: if is_valid or max_iterations → END, else → coder_node"
+        },
+        "prompts": {
+          "BASE_CODER_SYSTEM": "Expert {language} developer. Output [FILE: path][/FILE] format.",
+          "CODER_USER_PROMPT": "Task + context + review_feedback → write code.",
+          "BASE_REVIEWER_SYSTEM": "Strict Senior Code Reviewer. Check syntax, security, edge cases, performance, style. Respond PASS or list issues.",
+          "REVIEWER_USER_PROMPT": "Code to review: {draft_code}",
+          "PONYTAIL_RULES": "YAGNI-first rules injected when ponytail_mode=true"
+        }
+      },
+      "app/agent/streaming.py": {
+        "purpose": "ASYNC streaming agent. Yields SSE events token-by-token for live UI updates. Used by POST /api/v1/agent/generate/stream.",
+        "exports": ["stream_agent()", "parse_files_from_code()"],
+        "sse_events": [
+          {"type": "node_start", "fields": ["node (coder|reviewer|judge)", "iteration"]},
+          {"type": "thought_token", "fields": ["text", "iteration"]},
+          {"type": "coder_token", "fields": ["text", "iteration"]},
+          {"type": "reviewer_token", "fields": ["text", "iteration"]},
+          {"type": "judge_token", "fields": ["text", "iteration"]},
+          {"type": "node_end", "fields": ["node", "iteration", "draft_code?", "files?", "feedback?", "is_valid?", "evaluation?"]},
+          {"type": "error", "fields": ["message", "iteration?"]},
+          {"type": "done", "fields": ["iterations", "is_valid", "draft_code", "review_feedback", "judge_evaluation?", "files"]}
+        ],
+        "key_details": {
+          "thought_splitting": "Before first [FILE: or ``` marker, content is emitted as thought_token. After marker, as coder_token.",
+          "code_fence_stripping": "_strip_code_fences() removes leading/trailing ``` markers.",
+          "file_parsing": "parse_files_from_code() regex: \\[FILE:\\s*(.+?)\\](.*?)\\[/FILE\\] with DOTALL. Falls back to single generated_code.txt.",
+          "judge_node": "LLM-as-judge evaluates whether reviewer feedback was addressed across iterations. Uses JUDGE_SYSTEM + JUDGE_USER_PROMPT with iteration_history JSON.",
+          "iteration_history": "List of {iteration, draft_code, review_feedback, is_valid} dicts passed to judge.",
+          "template_safety": "previous_draft_for_prompt passed as template VARIABLE (not concatenated into template string) to avoid { } parsing crashes."
+        }
+      },
+      "app/rag/codebase_rag.py": {
+        "purpose": "ChromaDB vector store wrapper. Ingests codebase directories, retrieves semantic context for agent prompts.",
+        "exports": ["CodebaseRAG", "LANGUAGE_EXT_MAP"],
+        "methods": {
+          "ingest_directory(repo_path, extensions)": "Scans directory with .agentignore filtering → ingests each file → returns {files_processed, chunks_created, logs}",
+          "ingest_file(file_path)": "Reads file → chunk_code() → embeds → stores in ChromaDB with metadata",
+          "retrieve_context(query, k=3)": "Semantic search → returns concatenated chunks with source annotations",
+          "get_collection_stats()": "Returns {total_chunks, total_files, files, collection_name}",
+          "delete_collection()": "Deletes and recreates ChromaDB collection",
+          "list_indexed_files()": "Returns sorted list of all indexed file paths"
+        },
+        "supported_languages": ["python", "typescript", "tsx", "javascript", "java", "cpp", "c", "kotlin", "rust", "go", "ruby", "swift", "php", "html", "css", "json", "markdown"],
+        "chroma_config": {"collection": "codebase", "distance": "cosine", "persist": "./data/chromadb"}
+      },
+      "app/rag/code_chunker.py": {
+        "purpose": "Tree-sitter AST-based code chunking. Splits source files at function/class/import boundaries for semantic RAG chunks.",
+        "exports": ["chunk_code()", "treesitter_chunk()"],
+        "tree_sitter_languages": {
+          "python": "function_definition, class_definition, import_statement",
+          "java": "method_declaration, class_declaration, interface_declaration, import_declaration",
+          "cpp/c": "function_definition, class_specifier, struct_specifier, enum_specifier, preproc_include",
+          "kotlin": "function_declaration, class_declaration, interface_declaration, object_declaration, package_header, import_header",
+          "typescript/tsx": "function_declaration, class_declaration, interface_declaration, enum_declaration, import_statement, type_alias_declaration, lexical_declaration",
+          "javascript": "function_declaration, class_declaration, import_statement, lexical_declaration, expression_statement",
+          "html": "doctype, element (body-scoped)",
+          "css": "rule_set, media_statement",
+          "json": "pair (deep-chunked)",
+          "markdown": "atx_heading, setext_heading, code_block, fenced_code_block"
+        },
+        "fallback": "If Tree-sitter parse fails or language unsupported → entire file as single chunk"
+      },
+      "app/rag/agentignore.py": {
+        "purpose": ".agentignore file parser/matcher. Glob-style patterns to exclude files/dirs from RAG ingestion.",
+        "exports": ["read_agentignore()", "write_agentignore()", "is_ignored()"],
+        "pattern_syntax": ["folder/ → match directory at any depth", "*.md → match files in root", "**/*.md → recursive glob", "# comments and blank lines ignored"],
+        "default_header": "DEFAULT_AGENTIGNORE template written when creating new .agentignore"
+      },
+      "app/workspace/manager.py": {
+        "purpose": "Session-based virtual workspace. Stores generated files in .workspace/<session_id>/files.json, supports apply-to-disk with backup and revert.",
+        "exports": ["create_session", "heartbeat", "set_files", "get_file_tree", "get_file_content", "apply_files", "revert_files", "cleanup_stale_sessions"],
+        "storage": ".workspace/<session_id>/files.json (JSON with content + original backup)",
+        "ttl": "24h session TTL, 1h GC interval"
+      }
+    },
+    "frontend": {
+      "src/main.tsx": {
+        "purpose": "React entry point. Renders <App /> into #root with StrictMode."
+      },
+      "src/App.tsx": {
+        "purpose": "Root component. Manages all global state: models, generation, streaming buffers, workspace, toasts, logs. Orchestrates 5-column resizable layout.",
+        "state": {
+          "models": ["coderModel", "reviewerModel"],
+          "generation": ["generating", "lastAction", "streamError", "totalIterations"],
+          "streaming_buffers": ["coderBuffer", "thoughtsBuffer", "judgeBuffer", "finalCode", "finalFeedback", "judgeEvaluation", "finalIsValid", "currentNode"],
+          "workspace": ["sessionId", "workspaceFiles", "selectedFile", "applied", "hasBackups", "applyBaseDir"],
+          "ui": ["appLogs", "toasts", "showModal"]
+        },
+        "key_functions": {
+          "handleGenerate": "Resets state, sets currentNode='coder' immediately, calls generateCodeStream()",
+          "handleStreamEvent": "Dispatches SSE events to buffer states (node_start, *_token, node_end, error, done)",
+          "handleApply": "Calls workspaceApply() → writes files to disk with backup",
+          "handleRevert": "Calls workspaceRevert() → restores originals from backup"
+        },
+        "layout": "Left sidebar (ModelSelector + RagPanel) | Main: TaskPanel + 5-column ResizableColumns (FileExplorer | Thoughts | FilePreview | ReviewFeedback | Judge) | Bottom: LogViewer | Footer: StatusBar",
+        "derived_state": {
+          "hasResults": "generating || currentNode !== null || streamError !== null || finalCode !== '' || fileCount > 0 || finalFeedback !== '' || judgeEvaluation !== ''",
+          "centerCode": "currentNode==='coder' ? coderBuffer : finalCode",
+          "centerStreaming": "currentNode === 'coder'",
+          "rightFeedback": "currentNode==='judge' ? judgeBuffer : finalFeedback",
+          "rightStreaming": "currentNode === 'reviewer' || currentNode === 'judge'"
+        }
+      },
+      "src/api.ts": {
+        "purpose": "HTTP client. All backend API calls wrapped as typed async functions. SSE streaming via ReadableStream reader.",
+        "exports": ["getHealth", "getModels", "generateCode", "generateCodeStream", "ingestRepo", "getRagStats", "clearRag", "detectRepoLanguages", "detectRepoStructure", "updateBlacklist", "launchProject", "workspaceInit", "workspaceHeartbeat", "workspaceSetFiles", "workspaceGetFiles", "workspaceGetFile", "workspaceApply", "workspaceRevert", "workspaceCleanup"],
+        "sse_parsing": "ReadableStream → TextDecoder → split on \\n\\n → parse 'data: ' lines as JSON StreamEvent"
+      },
+      "src/types.ts": {
+        "purpose": "TypeScript interfaces for all API types + SSE StreamEvent union type.",
+        "exports": ["HealthResponse", "ModelInfo", "RagIngestRequest", "RagIngestResponse", "DetectStructureResponse", "RepoItem", "UpdateBlacklistRequest", "UpdateBlacklistResponse", "RagStatsResponse", "GenerateRequest", "GenerateResponse", "WorkspaceFileTree", "WorkspaceFileContent", "WorkspaceApplyResult", "WorkspaceRevertResult", "WorkspaceCleanupResult", "LaunchResponse", "ToastMessage", "StreamEvent (union of 10 event types)"]
+      },
+      "src/components/": {
+        "TaskPanel.tsx": {"purpose": "Task input form. Textarea + max iterations slider + PonyTail toggle + Generate button.", "props": ["coderModel", "reviewerModel", "onGenerate", "addToast", "loading", "sessionId"]},
+        "ModelSelector.tsx": {"purpose": "Dropdown selectors for coder and reviewer models. Fetches model list from /api/v1/models on mount.", "props": ["coderModel", "reviewerModel", "onCoderChange", "onReviewerChange", "addToast"]},
+        "RagPanel.tsx": {"purpose": "RAG management panel. Custom path input (default), example project toggle, recent projects dropdown, Detect/Structure/Ingest buttons, BlacklistModal trigger, Launch button.", "props": ["addToast", "addLog"]},
+        "FileExplorer.tsx": {"purpose": "Tree view of generated workspace files. Builds nested tree from flat path list.", "props": ["files", "selectedFile", "onSelect", "applied"]},
+        "FilePreview.tsx": {"purpose": "Code viewer with file tabs. Live streaming: plain <pre> for performance. After streaming: SyntaxHighlighter with line numbers. Strips [FILE:] tags during live mode.", "props": ["files", "liveCode?", "streaming?"]},
+        "ReviewFeedback.tsx": {"purpose": "Markdown-rendered review/judge feedback panel. Shows PASS/FAIL badge, live cursor during streaming.", "props": ["feedback", "isValid", "liveContent?", "streaming?", "label?"]},
+        "ResizableColumns.tsx": {"purpose": "5-column flex layout with draggable dividers. DOM-direct width manipulation during drag (no React re-render), state commit on mouseup.", "props": ["initialWidths", "minWidths?", "children", "className?"]},
+        "LogViewer.tsx": {"purpose": "Resizable bottom panel showing timestamped execution logs. Auto-scrolls to bottom.", "props": ["logs"]},
+        "StatusBar.tsx": {"purpose": "Footer bar showing coder/reviewer model names, last action, iteration count, help button.", "props": ["coderModel", "reviewerModel", "lastAction", "iterations", "onHelpClick?"]},
+        "Header.tsx": {"purpose": "Top bar with project name and backend connection status indicator. Polls /health every 10s.", "props": []},
+        "Toast.tsx": {"purpose": "Fixed-position toast notifications (success/error/info). Auto-dismiss after 5s.", "props": ["toasts", "removeToast"]},
+        "WelcomeModal.tsx": {"purpose": "First-run help modal with 'How to Use' and 'Features, Tips & Tricks' tabs. Dismissable with 'Don't show again'.", "props": ["show", "onClose", "onDontShowAgain", "initialTab?"]},
+        "WorkspaceActions.tsx": {"purpose": "Apply/Revert/Cleanup buttons for generated files. Apply writes to disk with backup, Revert restores originals.", "props": ["fileCount", "hasBackups", "applied", "onApply", "onRevert", "onCleanup"]},
+        "BlacklistModal.tsx": {"purpose": "Modal for selecting files/folders to blacklist via .agentignore. Checkbox tree from detect-structure results.", "props": ["repoPath", "initialItems", "initialPatterns", "onSaved", "onClose", "addToast"]},
+        "CodeDisplay.tsx": {"purpose": "Legacy single-file code display with SyntaxHighlighter + copy button. Used in backup version, superseded by FilePreview.", "props": ["code", "language"]}
+      }
+    },
+    "root_files": {
+      "launcher.py": {"purpose": "Single-command launcher. Finds free port, starts backend (uvicorn), waits for readiness, starts frontend (npm run dev)."},
+      "examples/": {"purpose": "Demo projects for testing: streamlit_dashboard (Streamlit+Plotly), todo_app (CLI). Each has its own launch.py."}
+    }
+  },
+  "relationships": {
+    "import_graph": {
+      "backend_core": [
+        "app/main.py → app.core.config (settings)",
+        "app/main.py → app.models.schemas (all schemas)",
+        "app/main.py → app.rag.codebase_rag (CodebaseRAG, LANGUAGE_EXT_MAP)",
+        "app/main.py → app.rag.agentignore (read/write/is_ignored)",
+        "app/main.py → app.agent.workflow (build_workflow)",
+        "app/main.py → app.agent.state (AgentState)",
+        "app/main.py → app.agent.streaming (stream_agent)",
+        "app/main.py → app.workspace.manager (all workspace functions)"
+      ],
+      "agent_layer": [
+        "app/agent/workflow.py → app.agent.state (AgentState)",
+        "app/agent/workflow.py → app.core.config (settings)",
+        "app/agent/workflow.py → langchain_ollama (ChatOllama)",
+        "app/agent/workflow.py → langgraph (StateGraph, START, END)",
+        "app/agent/streaming.py → app.core.config (settings)",
+        "app/agent/streaming.py → app.rag.codebase_rag (CodebaseRAG)",
+        "app/agent/streaming.py → langchain_ollama (ChatOllama)",
+        "app/agent/streaming.py → langchain_core.prompts (ChatPromptTemplate)"
+      ],
+      "rag_layer": [
+        "app/rag/codebase_rag.py → app.rag.code_chunker (chunk_code)",
+        "app/rag/codebase_rag.py → app.rag.agentignore (read_agentignore, is_ignored)",
+        "app/rag/codebase_rag.py → app.core.config (settings)",
+        "app/rag/codebase_rag.py → chromadb",
+        "app/rag/codebase_rag.py → langchain_ollama (OllamaEmbeddings)",
+        "app/rag/code_chunker.py → tree_sitter (Language, Parser)",
+        "app/rag/code_chunker.py → tree_sitter_python, tree_sitter_java, tree_sitter_cpp, tree_sitter_kotlin, tree_sitter_typescript, tree_sitter_javascript, tree_sitter_html, tree_sitter_css, tree_sitter_json, tree_sitter_markdown"
+      ],
+      "frontend_core": [
+        "src/App.tsx → src/api (generateCodeStream, workspaceInit, workspaceApply, workspaceRevert, workspaceCleanup)",
+        "src/App.tsx → src/types (StreamEvent, GenerateRequest, ToastMessage)",
+        "src/App.tsx → src/components/* (all 15 components)",
+        "src/api.ts → src/types (all API types)",
+        "src/components/Header.tsx → src/api (getHealth)",
+        "src/components/ModelSelector.tsx → src/api (getModels), src/types (ModelInfo)",
+        "src/components/RagPanel.tsx → src/api (ingestRepo, detectRepoLanguages, detectRepoStructure, updateBlacklist, launchProject, getRagStats)",
+        "src/components/BlacklistModal.tsx → src/api (updateBlacklist - dynamic import), src/types (RepoItem, UpdateBlacklistResponse)",
+        "src/components/FilePreview.tsx → react-syntax-highlighter (Prism, oneDark)",
+        "src/components/ReviewFeedback.tsx → react-markdown",
+        "src/components/CodeDisplay.tsx → react-syntax-highlighter (Prism, oneDark)"
+      ]
+    },
+    "api_routes": {
+      "health": "GET /health → HealthResponse (status, version, models)",
+      "models": "GET /api/v1/models → model list",
+      "rag_ingest": "POST /api/v1/rag/ingest {repo_path, languages} → IngestResponse",
+      "rag_stats": "GET /api/v1/rag/stats → {total_chunks, total_files, files}",
+      "rag_clear": "POST /api/v1/rag/clear → {status: 'cleared'}",
+      "rag_detect_languages": "POST /api/v1/rag/detect-languages?repo_path=... → {languages: [...]}",
+      "rag_detect_structure": "POST /api/v1/rag/detect-structure {repo_path} → StructureResponse",
+      "rag_blacklist": "POST /api/v1/rag/blacklist {repo_path, patterns} → BlacklistResponse",
+      "agent_generate_sync": "POST /api/v1/agent/generate → AgentResponse (LangGraph sync)",
+      "agent_generate_stream": "POST /api/v1/agent/generate/stream → SSE stream (async token-by-token)",
+      "workspace_init": "POST /api/v1/workspace/init → {session_id}",
+      "workspace_heartbeat": "POST /api/v1/workspace/heartbeat?session_id=... → {ok}",
+      "workspace_set_files": "POST /api/v1/workspace/set-files {session_id, files} → {ok}",
+      "workspace_files": "GET /api/v1/workspace/files?session_id=... → WorkspaceFileTreeResponse",
+      "workspace_file": "GET /api/v1/workspace/file?session_id=...&path=... → WorkspaceFileContentResponse",
+      "workspace_apply": "POST /api/v1/workspace/apply {session_id, base_dir?} → WorkspaceApplyResponse",
+      "workspace_revert": "POST /api/v1/workspace/revert {session_id, base_dir?} → WorkspaceRevertResponse",
+      "workspace_cleanup": "POST /api/v1/workspace/cleanup → WorkspaceCleanupResponse",
+      "launch": "POST /api/v1/launch {repo_path} → LaunchResponse"
+    },
+    "component_tree": {
+      "App": {
+        "children": ["Header", "ModelSelector", "RagPanel", "TaskPanel", "ResizableColumns", "LogViewer", "StatusBar", "Toast", "WelcomeModal"],
+        "ResizableColumns": {
+          "children": ["FileExplorer + WorkspaceActions", "ThoughtsPanel (inline Markdown)", "FilePreview", "ReviewFeedback", "ReviewFeedback (Judge)"]
+        }
+      }
+    }
+  },
+  "patterns_and_conventions": {
+    "backend": {
+      "naming": "snake_case for Python files/functions, PascalCase for classes",
+      "error_handling": "try/except in all LLM calls → graceful error messages, never crashes the workflow",
+      "streaming": "SSE format: 'data: {json}\\n\\n'. Anti-buffer headers (Cache-Control: no-cache, X-Accel-Buffering: no). await asyncio.sleep(0) after each yield for flush.",
+      "file_format": "[FILE: path/to/file.ext]\\ncontent\\n[/FILE] — LLMs instructed to use this. Regex parse with DOTALL flag.",
+      "template_safety": "Code containing { } must be passed as ChatPromptTemplate VARIABLE values, NEVER concatenated into template strings (causes 'unmatched {' errors).",
+      "ponytail": "PONYTAIL_RULES string prepended to system prompts when ponytail_mode=true. YAGNI-first: stdlib > native > dependency > one-liner > minimal code."
+    },
+    "frontend": {
+      "naming": "PascalCase for components, camelCase for functions/variables",
+      "state_management": "All state in App.tsx via useState. No Redux/Context. Props drilling to children.",
+      "streaming_ui": "Plain <pre> during live streaming (avoids SyntaxHighlighter re-render cost). SyntaxHighlighter only after streaming ends. [FILE:] tags stripped during live mode.",
+      "resizing": "DOM-direct style.width during drag (no React re-render). State commit only on mouseup.",
+      "styling": "Tailwind utility classes. Dark theme (bg-dark-800/900/950, text-gray-300). border-dark-600 for separators."
+    }
+  },
+  "key_algorithms": {
+    "agent_loop": "while iteration < max_iterations AND not is_valid: coder → reviewer → if PASS: break, else: coder gets reviewer feedback → repeat",
+    "code_chunking": "Tree-sitter parse → walk AST → collect text between chunk-boundary nodes (function/class/import) → merge small inter-declaration text (<40 chars) into preceding chunk",
+    "agentignore_matching": "fnmatch on path parts. Directory patterns match any segment. **/ prefix for recursive glob. Root-relative and filename-only fallback matching.",
+    "workspace_apply": "For each file: backup original if exists → write new content → touch .applied flag. Revert: copy backups back to original paths.",
+    "sse_parsing": "ReadableStream → TextDecoder → accumulate buffer → split on \\n\\n → for each part, split on \\n → find 'data: ' line → JSON.parse → dispatch event"
+  },
+  "external_dependencies": {
+    "python_packages": ["fastapi", "uvicorn", "pydantic>=2", "pydantic-settings", "langchain>=1.3", "langchain-ollama", "langgraph>=1.2", "chromadb", "tree-sitter", "tree-sitter-python", "tree-sitter-java", "tree-sitter-cpp", "tree-sitter-kotlin", "tree-sitter-typescript", "tree-sitter-javascript", "tree-sitter-html", "tree-sitter-css", "tree-sitter-json", "tree-sitter-markdown", "httpx"],
+    "npm_packages": ["react@18", "react-dom@18", "typescript@5", "vite@5", "tailwindcss@3", "@tailwindcss/typography", "react-markdown", "react-syntax-highlighter", "prismjs"],
+    "external_services": ["Ollama (localhost:11434) — LLM inference + embeddings"]
+  },
+  "test_coverage": {
+    "backend": "70 tests passed, 2 skipped (pytest). Covers: API endpoints, agent workflow, RAG ingestion/retrieval, code chunking, .agentignore parsing.",
+    "frontend": "TypeScript strict mode (tsc --noUnusedLocals). Vite build passes. No unit tests."
+  }
+}
